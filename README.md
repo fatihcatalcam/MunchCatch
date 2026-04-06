@@ -12,10 +12,12 @@ A browser-based **Healthy vs Junk Food** falling-objects game built entirely wit
 | Move right | → Arrow Key or **D** |
 | Start game | **SPACE** or click / tap |
 | Pause / Resume | **P** or **ESC** |
+| Mute / Unmute | **M** or click 🔊 button |
 | Mobile | Tap the **left** or **right** half of the screen |
 
 **Catch healthy food** (🍎🥦🥕🍌🍉) — each catch scores **+10 points**.  
 **Avoid junk food** (🍔🍟🥤🍩🍬) — each catch costs **1 life**.  
+**Don't miss healthy food** — letting healthy food fall past the bottom also costs **1 life** (red flash + screen shake).  
 You start with **3 lives** shown as hearts ❤❤❤.
 
 ### Combo System

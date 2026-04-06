@@ -1010,6 +1010,7 @@ const keys = { left: false, right: false };
 let touchDir = 0; // -1 = left, 0 = none, 1 = right
 
 document.addEventListener('keydown', e => {
+  SoundManager.init(); // resume AudioContext on first key press
   switch (e.key) {
     case 'ArrowLeft':  case 'a': case 'A': keys.left  = true;  e.preventDefault(); break;
     case 'ArrowRight': case 'd': case 'D': keys.right = true;  e.preventDefault(); break;
@@ -1020,6 +1021,9 @@ document.addEventListener('keydown', e => {
     case 'p': case 'P': case 'Escape':
       if (state === S.PLAYING || state === S.PAUSED) pauseGame();
       e.preventDefault();
+      break;
+    case 'm': case 'M':
+      SoundManager.toggleMute();
       break;
   }
 });
@@ -1034,9 +1038,17 @@ document.addEventListener('keyup', e => {
 // Touch controls — tap left or right half to move
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
+  SoundManager.init(); // resume AudioContext on first touch
   const touch = e.touches[0];
   const rect  = canvas.getBoundingClientRect();
   const tx    = (touch.clientX - rect.left) * (W / rect.width);
+  const ty    = (touch.clientY - rect.top)  * (H / rect.height);
+  // Check mute button tap first
+  if (tx >= muteBtn.x && tx <= muteBtn.x + muteBtn.w &&
+      ty >= muteBtn.y && ty <= muteBtn.y + muteBtn.h) {
+    SoundManager.toggleMute();
+    return;
+  }
   if (state === S.START || state === S.OVER) { startGame(); return; }
   if (state === S.PAUSED) { pauseGame(); return; }
   touchDir = tx < W / 2 ? -1 : 1;
@@ -1047,8 +1059,18 @@ canvas.addEventListener('touchend', e => {
   touchDir = 0;
 }, { passive: false });
 
-// Mouse click for start / restart
-canvas.addEventListener('click', () => {
+// Mouse click for start / restart / mute toggle
+canvas.addEventListener('click', e => {
+  SoundManager.init();
+  const rect = canvas.getBoundingClientRect();
+  const cx   = (e.clientX - rect.left) * (W / rect.width);
+  const cy   = (e.clientY - rect.top)  * (H / rect.height);
+  // Mute button click (available in all states)
+  if (cx >= muteBtn.x && cx <= muteBtn.x + muteBtn.w &&
+      cy >= muteBtn.y && cy <= muteBtn.y + muteBtn.h) {
+    SoundManager.toggleMute();
+    return;
+  }
   if (state === S.START || state === S.OVER) startGame();
   else if (state === S.PAUSED) pauseGame();
 });
@@ -1087,6 +1109,7 @@ function triggerShake(mag, dur) {
 function triggerLevelUp(msg) {
   lvlUpText  = msg;
   lvlUpTimer = 2.2;
+  SoundManager.playLevelUp();
 }
 
 function checkCollisions() {
@@ -1104,13 +1127,17 @@ function checkCollisions() {
         combo++;
         let pts = CFG.HEALTHY_PTS;
         let label = `+${pts}`;
-        if (combo >= CFG.COMBO_THRESHOLD) {
+        const isCombo = combo >= CFG.COMBO_THRESHOLD;
+        if (isCombo) {
           pts  += CFG.COMBO_BONUS_PTS;
           label = `+${pts} COMBO x${combo}!`;
+          SoundManager.playCombo();
+        } else {
+          SoundManager.playCollect();
         }
         score += pts;
         glowTimer = 0.55;
-        floatTexts.push(new FloatText(obj.x, obj.y - obj.size, label, combo >= CFG.COMBO_THRESHOLD ? '#f1c40f' : '#ffffff'));
+        floatTexts.push(new FloatText(obj.x, obj.y - obj.size, label, isCombo ? '#f1c40f' : '#ffffff'));
         spawnParticles(obj.x, obj.y, info.color);
         // Milestone check
         CFG.SCORE_THRESHOLDS.forEach(t => {
@@ -1127,7 +1154,8 @@ function checkCollisions() {
         // Junk food caught — lose a life
         combo = 0;
         lives--;
-        floatTexts.push(new FloatText(obj.x, obj.y - obj.size, '-1 LIFE', '#e74c3c'));
+        SoundManager.playHurt();
+        floatTexts.push(new FloatText(obj.x, obj.y - obj.size, '-1 ❤', '#e74c3c'));
         spawnParticles(obj.x, obj.y, '#e74c3c');
         // ============================================================
         // CG CONCEPT: Screen Shake (Translation-based Feedback)
@@ -1173,6 +1201,7 @@ function spawnObject() {
 // GAME CONTROL FUNCTIONS
 // ============================================================
 function startGame() {
+  SoundManager.playClick();
   score      = 0;
   lives      = CFG.MAX_LIVES;
   level      = 1;
@@ -1189,6 +1218,7 @@ function startGame() {
   glowTimer  = 0;
   shakeAmt   = 0;
   shakeDur   = 0;
+  bottomFlashTimer = 0;
   triggeredMilestones = new Set();
   objects    = [];
   particles  = [];
@@ -1207,6 +1237,7 @@ function endGame() {
     highScore = score;
     localStorage.setItem('munchcatch_hs', highScore);
   }
+  SoundManager.playGameOver();
   state = S.OVER;
 }
 
@@ -1373,10 +1404,10 @@ function drawStartScreen() {
   // Instructions
   const lines = [
     ['🥗 Catch HEALTHY food   →  +10 pts', '#ffffff'],
-    ['🍔 AVOID junk food        →  -1 life', '#ff8a80'],
+    ['🍔 Catch junk / miss healthy  →  -1 ❤', '#ff8a80'],
     ['⬅ ➡  Arrow Keys or  A / D  to move', 'rgba(255,255,255,0.78)'],
     ['📱 Tap left / right half on mobile', 'rgba(255,255,255,0.68)'],
-    ['⏸  Press P or ESC to pause', 'rgba(255,255,255,0.68)'],
+    ['⏸  P / ESC  pause    M  mute', 'rgba(255,255,255,0.68)'],
   ];
   ctx.font = `${Math.round(H * 0.025)}px Arial, sans-serif`;
   lines.forEach(([text, color], i) => {
@@ -1403,10 +1434,58 @@ function drawStartScreen() {
   ctx.restore();
 }
 
+// ============================================================
+// CG CONCEPT: Mute Button — persistent UI overlay
+// Drawn at the bottom-right corner in every game state so the
+// player can toggle sound at any time.  The bounds are stored
+// in `muteBtn` so click/touch handlers can hit-test against it.
+// ============================================================
+function drawMuteButton() {
+  const size = Math.round(W * 0.072);
+  const pad  = Math.round(W * 0.026);
+  muteBtn.x = W - pad - size;
+  muteBtn.y = H - pad - size;
+  muteBtn.w = size;
+  muteBtn.h = size;
+
+  ctx.save();
+  // Background pill
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.roundRect(muteBtn.x, muteBtn.y, size, size, size * 0.22);
+  ctx.fill();
+  // Icon
+  ctx.font         = `${Math.round(size * 0.60)}px Arial, sans-serif`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(SoundManager.muted ? '🔇' : '🔊', muteBtn.x + size / 2, muteBtn.y + size / 2);
+  ctx.restore();
+}
+
 function drawPlayingScreen() {
   drawBg();
   objects.forEach(o => o.draw());
   basket.draw();
+
+  // ============================================================
+  // CG CONCEPT: Bottom Flash — Translation-free feedback
+  // A gradient rectangle drawn at the bottom of the canvas
+  // pulses red when the player misses a healthy food item,
+  // giving immediate spatial feedback about where the item fell.
+  // ============================================================
+  if (bottomFlashTimer > 0) {
+    const alpha = Math.min(1, bottomFlashTimer / 0.15) * 0.60;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const flashH  = H * 0.18;
+    const flashGr = ctx.createLinearGradient(0, H - flashH, 0, H);
+    flashGr.addColorStop(0, 'rgba(255,0,0,0)');
+    flashGr.addColorStop(1, 'rgba(255,0,0,1)');
+    ctx.fillStyle = flashGr;
+    ctx.fillRect(0, H - flashH, W, flashH);
+    ctx.restore();
+  }
+
   particles.forEach(p => p.draw());
   floatTexts.forEach(t => t.draw());
   drawHUD();
@@ -1533,13 +1612,43 @@ function updatePlaying(dt) {
   particles.forEach(p => p.update(dt));
   floatTexts.forEach(t => t.update(dt));
 
+  if (lvlUpTimer > 0) lvlUpTimer -= dt;
+
+  // Collision check must run before missed detection so a caught object
+  // is already flagged before we look for uncaught items past the bottom.
+  checkCollisions();
+
+  // ============================================================
+  // NEW RULE: Missed healthy food costs 1 life.
+  // Detect healthy, uncaught objects whose centre has passed the
+  // bottom edge of the canvas (y > H).  A `missed` flag prevents
+  // the penalty from firing more than once per object.
+  // ============================================================
+  objects.forEach(obj => {
+    if (obj.caught || obj.missed) return;
+    if (!FOOD_DATA[obj.type].healthy) return;
+    if (obj.y - obj.size * 0.5 > H) {
+      obj.missed = true;
+      lives--;
+      combo = 0;
+      SoundManager.playHurt();
+      floatTexts.push(new FloatText(
+        clamp(obj.x, W * 0.10, W * 0.90),
+        H - H * 0.07,
+        '-1 ❤',
+        '#ff4444'
+      ));
+      spawnParticles(obj.x, H, '#e74c3c');
+      triggerShake(8, 0.38);
+      bottomFlashTimer = 0.35;
+      if (lives <= 0) { endGame(); return; }
+    }
+  });
+
   objects    = objects.filter(o   => !o.dead);
   particles  = particles.filter(p => !p.dead);
   floatTexts = floatTexts.filter(t => !t.dead);
 
-  if (lvlUpTimer > 0) lvlUpTimer -= dt;
-
-  checkCollisions();
   updateProgression(dt);
 }
 
@@ -1569,6 +1678,9 @@ function gameLoop(timestamp) {
     shakeDur -= dt;
     if (shakeDur <= 0) { shakeDur = 0; shakeAmt = 0; }
   }
+
+  // Bottom flash timer (red edge flash on missed healthy food)
+  if (bottomFlashTimer > 0) bottomFlashTimer = Math.max(0, bottomFlashTimer - dt);
 
   ctx.clearRect(0, 0, W, H);
 
@@ -1610,6 +1722,9 @@ function gameLoop(timestamp) {
 
   // Fade overlay is drawn outside shake so it covers cleanly
   drawFade();
+
+  // Mute button is always visible, drawn above everything
+  drawMuteButton();
 
   // Schedule next frame
   requestAnimationFrame(gameLoop);
