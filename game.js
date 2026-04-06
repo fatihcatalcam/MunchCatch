@@ -64,7 +64,12 @@ const CFG = {
   SPEED_MULT:        1.15,   // speed multiplier per level
   SPAWN_MULT:        0.90,   // spawn interval multiplier per level
   LEVEL_DURATION_MS: 30000,  // ms per difficulty level
-  MAX_LIVES:         3,
+  MAX_LIVES:         3,      // starting lives
+  HEART_MAX_LIVES:   3,      // absolute cap when catching heart items
+  HEART_BONUS_PTS:   25,     // bonus score when catching a heart at full lives
+  HEART_MIN_LEVEL:   4,      // hearts do not appear before this level
+  HEART_SPEED_MULT:  1.30,   // hearts fall 30% faster than regular food
+  HEART_INTERVAL_MS: 60000,  // ~1 heart per 2 levels (60 s base, ±randomness)
   HEALTHY_PTS:       10,
   COMBO_BONUS_PTS:   5,
   COMBO_THRESHOLD:   3,      // catch streak needed for combo bonus
@@ -79,7 +84,8 @@ const CFG = {
 // ============================================================
 // FOOD TYPE REGISTRY
 // Healthy foods award points; junk foods cost a life.
-// baseColor is used for particle effects on catch.
+// Heart items are a special third category (see below).
+// color is used for particle effects on catch.
 // ============================================================
 const FOOD_DATA = {
   apple:      { healthy: true,  color: '#e74c3c', label: 'Apple'      },
@@ -92,9 +98,11 @@ const FOOD_DATA = {
   soda:       { healthy: false, color: '#8e44ad', label: 'Soda'       },
   donut:      { healthy: false, color: '#e91e8c', label: 'Donut'      },
   candy:      { healthy: false, color: '#e74c3c', label: 'Candy'      },
+  // Special item — not healthy, not junk, handled separately in collision logic
+  heart:      { heart: true,   color: '#ff1493', label: 'Heart'       },
 };
 const HEALTHY = Object.keys(FOOD_DATA).filter(k =>  FOOD_DATA[k].healthy);
-const JUNK    = Object.keys(FOOD_DATA).filter(k => !FOOD_DATA[k].healthy);
+const JUNK    = Object.keys(FOOD_DATA).filter(k => !FOOD_DATA[k].healthy && !FOOD_DATA[k].heart);
 
 // ============================================================
 // CG CONCEPT: Procedural Audio Synthesis (Web Audio API)
@@ -166,6 +174,17 @@ const SoundManager = {
     [440, 370, 294, 220].forEach((freq, i) => this._tone(freq, 'sine', 0.28, 0.22, i * 0.18));
   },
 
+  // Warm ascending chime — played when catching a heart item.
+  // Longer and more rewarding than the standard collect sound.
+  playHeartCollect() {
+    this.init();
+    [523, 659, 784, 1047, 1319].forEach((freq, i) => {
+      this._tone(freq, 'sine', 0.32, 0.22, i * 0.07);
+    });
+    // Soft shimmer layer on top
+    this._tone(1568, 'sine', 0.20, 0.10, 0.28);
+  },
+
   // Soft pop — played on game start / button click.
   playClick() {
     this.init();
@@ -211,6 +230,7 @@ let fadeAlpha = 1;    // screen fade overlay (1=black, 0=clear)
 let lvlUpText  = '';
 let lvlUpTimer = 0;   // counts down from 2.0
 let bottomFlashTimer = 0; // red flash at bottom when healthy food missed
+let heartSpawnTimer  = 0; // counts down to the next heart spawn attempt (ms)
 let muteBtn = { x: 0, y: 0, w: 0, h: 0 }; // mute button bounds for click detection
 
 // ============================================================
@@ -746,6 +766,66 @@ const FOOD_DRAWERS = {
     ctx.fillStyle = 'rgba(255,255,255,0.34)';
     ctx.fill();
   },
+
+  // ----------------------------------------------------------
+  // HEART (special rare item — grants +1 life)
+  // ============================================================
+  // CG CONCEPT: Procedural Shape Drawing — Bezier Curve Heart
+  // A heart is constructed from four cubic Bézier segments that
+  // meet at the bottom tip and the top-centre indent.  Control
+  // points are mirrored left/right to produce a symmetric shape.
+  // ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, endX, endY)
+  // ============================================================
+  heart(ctx, s) {
+    // Pink aura / glow — drawn as a larger translucent circle
+    // behind the heart to create a soft luminous halo.
+    ctx.save();
+    ctx.shadowColor = '#ff69b4';
+    ctx.shadowBlur  = s * 1.0;
+    ctx.globalAlpha = 0.30;
+    ctx.fillStyle   = '#ff1493';
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.55, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Heart body — four bezier segments from bottom tip (0, s*0.40)
+    // up the left side, over the left lobe, through the centre
+    // indent, over the right lobe, and back down to the tip.
+    ctx.save();
+    ctx.shadowColor = '#ff1493';
+    ctx.shadowBlur  = s * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(0, s * 0.40);
+    // Left side: tip → lower-left flank
+    ctx.bezierCurveTo(-s * 0.08, s * 0.20, -s * 0.52, s * 0.04, -s * 0.46, -s * 0.20);
+    // Left lobe: flank → top centre indent
+    ctx.bezierCurveTo(-s * 0.42, -s * 0.54, -s * 0.02, -s * 0.54,  0, -s * 0.30);
+    // Right lobe: indent → right flank
+    ctx.bezierCurveTo( s * 0.02, -s * 0.54,  s * 0.42, -s * 0.54,  s * 0.46, -s * 0.20);
+    // Right side: flank → tip
+    ctx.bezierCurveTo( s * 0.52, s * 0.04,   s * 0.08, s * 0.20,   0, s * 0.40);
+    ctx.closePath();
+
+    // Radial gradient fill: bright pink centre → deep red edge
+    const hg = ctx.createRadialGradient(-s * 0.10, -s * 0.14, 0, 0, 0, s * 0.52);
+    hg.addColorStop(0,   '#ff9ec8');
+    hg.addColorStop(0.45,'#ff3a85');
+    hg.addColorStop(1,   '#c01050');
+    ctx.fillStyle = hg;
+    ctx.fill();
+
+    ctx.strokeStyle = '#a00040';
+    ctx.lineWidth   = s * 0.045;
+    ctx.stroke();
+    ctx.restore();
+
+    // White highlight — small oval in the upper-left of the heart
+    ctx.beginPath();
+    ctx.ellipse(-s * 0.18, -s * 0.22, s * 0.10, s * 0.065, -0.55, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.50)';
+    ctx.fill();
+  },
 };
 
 // ============================================================
@@ -847,6 +927,12 @@ class FallObj {
     this.alpha = 1;
     this.caught = false;
     this.missed = false; // true once a missed-healthy penalty has been applied
+    // Heart-specific setup
+    if (type === 'heart') {
+      this.speed   *= CFG.HEART_SPEED_MULT; // falls 30% faster
+      this.rotSpd   = rnd(0.40, 1.10) * (Math.random() < 0.5 ? 1 : -1); // slower spin
+      this.pulseT   = 0; // drives the pulsing scale animation
+    }
   }
 
   update(dt) {
@@ -881,7 +967,19 @@ class FallObj {
     // screen, reinforcing the sense of forward movement / depth.
     // ============================================================
     const progress = clamp(this.y / H, 0, 1);
-    this.scale = 1 + progress * 0.13;
+
+    if (this.type === 'heart') {
+      // ============================================================
+      // CG CONCEPT: Sinusoidal Pulse Animation
+      // The heart gently breathes in and out each frame by modulating
+      // its scale with sin(pulseT).  This draws the player's eye to
+      // the rare item without requiring a separate sprite sheet.
+      // ============================================================
+      this.pulseT += dt * 5.5;
+      this.scale = (1 + progress * 0.10) * (1 + Math.sin(this.pulseT) * 0.11);
+    } else {
+      this.scale = 1 + progress * 0.13;
+    }
   }
 
   draw() {
@@ -1123,7 +1221,23 @@ function checkCollisions() {
       obj.caught = true;
       const info = FOOD_DATA[obj.type];
 
-      if (info.healthy) {
+      if (info.heart) {
+        // ============================================================
+        // HEART ITEM: +1 life (capped at HEART_MAX_LIVES) or +25 pts
+        // ============================================================
+        SoundManager.playHeartCollect();
+        if (lives < CFG.HEART_MAX_LIVES) {
+          lives++;
+          floatTexts.push(new FloatText(obj.x, obj.y - obj.size, '+1 ❤', '#ff69b4'));
+        } else {
+          score += CFG.HEART_BONUS_PTS;
+          glowTimer = 0.55;
+          floatTexts.push(new FloatText(obj.x, obj.y - obj.size, `+${CFG.HEART_BONUS_PTS} ♥`, '#ff69b4'));
+          if (score > highScore) { highScore = score; localStorage.setItem('munchcatch_hs', highScore); }
+        }
+        // Rich pink particle burst
+        for (let i = 0; i < 22; i++) particles.push(new Particle(obj.x, obj.y, i % 3 === 0 ? '#ffffff' : i % 3 === 1 ? '#ff69b4' : '#ff1493'));
+      } else if (info.healthy) {
         combo++;
         let pts = CFG.HEALTHY_PTS;
         let label = `+${pts}`;
@@ -1219,6 +1333,7 @@ function startGame() {
   shakeAmt   = 0;
   shakeDur   = 0;
   bottomFlashTimer = 0;
+  heartSpawnTimer  = CFG.HEART_INTERVAL_MS * rnd(0.8, 1.2);
   triggeredMilestones = new Set();
   objects    = [];
   particles  = [];
@@ -1301,12 +1416,13 @@ function drawHUD() {
   }
 
   // --- Lives (right, as hearts) ---
+  // Display up to HEART_MAX_LIVES slots so extra lives from hearts are visible.
   ctx.save();
   ctx.font      = `${Math.round(fs * 1.15)}px Arial, sans-serif`;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'top';
   let hearts = '';
-  for (let i = 0; i < CFG.MAX_LIVES; i++) hearts += (i < lives ? '❤' : '🖤');
+  for (let i = 0; i < CFG.HEART_MAX_LIVES; i++) hearts += (i < lives ? '❤' : '🖤');
   ctx.fillText(hearts, W - pad, pad);
   ctx.restore();
 
@@ -1405,8 +1521,8 @@ function drawStartScreen() {
   const lines = [
     ['🥗 Catch HEALTHY food   →  +10 pts', '#ffffff'],
     ['🍔 Catch junk / miss healthy  →  -1 ❤', '#ff8a80'],
+    ['❤  Rare heart (Lv 4+)  →  +1 life / +25 pts', '#ff9ec8'],
     ['⬅ ➡  Arrow Keys or  A / D  to move', 'rgba(255,255,255,0.78)'],
-    ['📱 Tap left / right half on mobile', 'rgba(255,255,255,0.68)'],
     ['⏸  P / ESC  pause    M  mute', 'rgba(255,255,255,0.68)'],
   ];
   ctx.font = `${Math.round(H * 0.025)}px Arial, sans-serif`;
@@ -1601,11 +1717,30 @@ function updatePlaying(dt) {
   updateBg(dt);
   basket.update(dt);
 
-  // Spawn new objects
+  // Spawn new regular food objects
   spawnTimer -= dt * 1000;
   if (spawnTimer <= 0) {
     spawnObject();
     spawnTimer = spawnMs * rnd(0.70, 1.30);
+  }
+
+  // ============================================================
+  // HEART SPAWN SYSTEM
+  // Hearts only appear from level 4 onward, roughly once every
+  // two levels.  At most one heart exists on screen at a time.
+  // ============================================================
+  if (level >= CFG.HEART_MIN_LEVEL) {
+    heartSpawnTimer -= dt * 1000;
+    if (heartSpawnTimer <= 0) {
+      // Only spawn if no heart is already on screen
+      const heartOnScreen = objects.some(o => o.type === 'heart' && !o.caught);
+      if (!heartOnScreen) {
+        const s = W * CFG.FOOD_RATIO;
+        objects.push(new FallObj('heart', rnd(s * 1.1, W - s * 1.1)));
+      }
+      // Reset with randomised interval (~1 heart per 2 levels)
+      heartSpawnTimer = CFG.HEART_INTERVAL_MS * rnd(0.70, 1.30);
+    }
   }
 
   objects.forEach(o   => o.update(dt));
@@ -1626,7 +1761,8 @@ function updatePlaying(dt) {
   // ============================================================
   objects.forEach(obj => {
     if (obj.caught || obj.missed) return;
-    if (!FOOD_DATA[obj.type].healthy) return;
+    // Hearts falling off-screen are simply lost — no life penalty.
+    if (!FOOD_DATA[obj.type].healthy || FOOD_DATA[obj.type].heart) return;
     if (obj.y - obj.size * 0.5 > H) {
       obj.missed = true;
       lives--;
