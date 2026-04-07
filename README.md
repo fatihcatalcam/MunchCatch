@@ -126,6 +126,6 @@ The game has **zero dependencies** — no npm, no build step, no server required
 
 ## Credits
 
-- Game design and code: *[Your Name]*
+- Game design and code: *Fatih Çatalçam*
 - All artwork drawn procedurally with the HTML5 Canvas 2D API
 - No third-party libraries or assets used
